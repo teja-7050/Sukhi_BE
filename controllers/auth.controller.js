@@ -7,6 +7,7 @@ const SESSION_DAYS = 7;
 const COOKIE_MAX_AGE = SESSION_DAYS * 24 * 60 * 60 * 1000; // 7 days in ms
 
 const generateOtp = () => Math.floor(100000 + Math.random() * 900000);
+const resolveUserId = (user) => user?.id || user?._id || null;
 
 // ─── POST /api/auth/send-otp ──────────────────────────────────
 const sendOtp = async (req, res, next) => {
@@ -38,18 +39,21 @@ const sendOtp = async (req, res, next) => {
       user = newUser;
     }
 
+    const userId = resolveUserId(user);
+    if (!userId) {
+      throw new CustomError("User record is missing id.", 500);
+    }
+
     // Remove any old OTPs for this user
-    await supabase.from("otps").delete().eq("user_id", user.id);
+    await supabase.from("otps").delete().eq("user_id", userId);
 
     // Create & save new OTP
     const otpCode = generateOtp();
-    const { error: otpError } = await supabase
-      .from("otps")
-      .insert({
-        user_id: user.id,
-        otp: otpCode,
-        timestamp: new Date().toISOString(),
-      });
+    const { error: otpError } = await supabase.from("otps").insert({
+      user_id: userId,
+      otp: otpCode,
+      timestamp: new Date().toISOString(),
+    });
     if (otpError) throw new CustomError(otpError.message, 500);
 
     // TODO: In production — send via SMS gateway (Twilio, MSG91, etc.)
@@ -88,11 +92,16 @@ const verifyOtp = async (req, res, next) => {
       );
     }
 
+    const userId = resolveUserId(user);
+    if (!userId) {
+      throw new CustomError("User record is missing id.", 500);
+    }
+
     // Fetch the most recent OTP for this user
     const { data: otpRecord, error: otpFetchError } = await supabase
       .from("otps")
       .select("*")
-      .eq("user_id", user.id)
+      .eq("user_id", userId)
       .order("timestamp", { ascending: false })
       .limit(1)
       .maybeSingle();
@@ -104,7 +113,7 @@ const verifyOtp = async (req, res, next) => {
     // Check if OTP has expired
     const otpAge = Date.now() - new Date(otpRecord.timestamp).getTime();
     if (otpAge > OTP_EXPIRY_MS) {
-      await supabase.from("otps").delete().eq("user_id", user.id);
+      await supabase.from("otps").delete().eq("user_id", userId);
       throw new CustomError("OTP has expired. Please request a new one.", 400);
     }
 
@@ -114,17 +123,17 @@ const verifyOtp = async (req, res, next) => {
     }
 
     // ✅ OTP is valid — clean up
-    await supabase.from("otps").delete().eq("user_id", user.id);
+    await supabase.from("otps").delete().eq("user_id", userId);
 
     // Issue a JWT valid for 7 days
-    const token = jwt.sign({ _id: user.id }, process.env.JWT_PASSWORD, {
+    const token = jwt.sign({ _id: userId }, process.env.JWT_PASSWORD, {
       expiresIn: `${SESSION_DAYS}d`,
     });
 
     // Persist session in DB (allows multi-device & forced logout)
     const { error: sessionError } = await supabase
       .from("sessions")
-      .insert({ user_id: user.id, token });
+      .insert({ user_id: userId, token });
     if (sessionError) throw new CustomError(sessionError.message, 500);
 
     // Set JWT in an HTTP-only cookie (safe from JS / XSS)
@@ -140,7 +149,7 @@ const verifyOtp = async (req, res, next) => {
       message: "Login successful",
       token, // also returned for localStorage fallback
       user: {
-        _id: user.id,
+        _id: userId,
         phone: user.phone,
         role: user.role,
       },

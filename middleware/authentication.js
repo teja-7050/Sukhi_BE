@@ -18,18 +18,23 @@ const isLoggedIn = async (req, res, next) => {
       throw new CustomError("Unauthorized!", 401);
     }
     const tokenDetails = jwt.verify(token, process.env.JWT_PASSWORD);
+    const tokenUserId = tokenDetails?._id || tokenDetails?.id;
+
+    if (!tokenUserId) {
+      throw new CustomError("Invalid session", 401);
+    }
 
     const { data: user, error: userError } = await supabase
       .from("users")
       .select("*")
-      .eq("id", tokenDetails._id)
+      .eq("id", tokenUserId)
       .maybeSingle();
     if (userError) {
       console.error("[Auth] Supabase user lookup error:", userError.message);
       throw new CustomError("Invalid session", 401);
     }
     if (!user) {
-      console.error("[Auth] No user found for id:", tokenDetails._id);
+      console.error("[Auth] No user found for id:", tokenUserId);
       throw new CustomError("Invalid session", 401);
     }
 
