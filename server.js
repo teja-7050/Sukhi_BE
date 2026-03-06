@@ -9,13 +9,25 @@ const chatRoutes = require("./routes/chat.routes");
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+const allowedOrigins = [
+  "http://localhost:5173",
+  "https://sukhi-fe.vercel.app",
+  ...(process.env.CLIENT_URLS || "").split(",").map((o) => o.trim()),
+  process.env.CLIENT_URL,
+].filter(Boolean);
+
+const corsOptions = {
+  origin(origin, callback) {
+    // Allow server-to-server and tools with no Origin header.
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error(`CORS blocked for origin: ${origin}`));
+  },
+  credentials: true,
+};
+
 // ─── Middleware ───────────────────────────────────────────────
-app.use(
-  cors({
-    origin: process.env.CLIENT_URL || "http://localhost:5173",
-    credentials: true, // required for HTTP-only cookies cross-origin
-  }),
-);
+app.use(cors(corsOptions));
 app.use(express.json());
 app.use(cookieParser());
 
