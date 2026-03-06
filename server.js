@@ -15,12 +15,15 @@ const allowedOrigins = [
   ...(process.env.CLIENT_URLS || "").split(",").map((o) => o.trim()),
   process.env.CLIENT_URL,
 ].filter(Boolean);
+const vercelPreviewOrigin = /^https:\/\/sukhi-fe.*\.vercel\.app$/i;
 
 const corsOptions = {
   origin(origin, callback) {
     // Allow server-to-server and tools with no Origin header.
     if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin)) return callback(null, true);
+    if (allowedOrigins.includes(origin) || vercelPreviewOrigin.test(origin)) {
+      return callback(null, true);
+    }
     return callback(new Error(`CORS blocked for origin: ${origin}`));
   },
   credentials: true,
