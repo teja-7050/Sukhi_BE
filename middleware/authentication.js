@@ -24,17 +24,28 @@ const isLoggedIn = async (req, res, next) => {
       .select("*")
       .eq("id", tokenDetails._id)
       .maybeSingle();
-    if (userError || !user) {
+    if (userError) {
+      console.error("[Auth] Supabase user lookup error:", userError.message);
+      throw new CustomError("Invalid session", 401);
+    }
+    if (!user) {
+      console.error("[Auth] No user found for id:", tokenDetails._id);
       throw new CustomError("Invalid session", 401);
     }
 
     // Check session still exists in DB
-    const { data: session } = await supabase
+    const { data: session, error: sessionError } = await supabase
       .from("sessions")
       .select("id")
       .eq("user_id", user.id)
       .eq("token", token)
       .maybeSingle();
+    if (sessionError) {
+      console.error(
+        "[Auth] Supabase session lookup error:",
+        sessionError.message,
+      );
+    }
     if (!session) {
       throw new CustomError("Invalid session", 401);
     }

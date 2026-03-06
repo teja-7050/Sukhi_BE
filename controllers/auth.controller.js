@@ -45,7 +45,11 @@ const sendOtp = async (req, res, next) => {
     const otpCode = generateOtp();
     const { error: otpError } = await supabase
       .from("otps")
-      .insert({ user_id: user.id, otp: otpCode, timestamp: new Date().toISOString() });
+      .insert({
+        user_id: user.id,
+        otp: otpCode,
+        timestamp: new Date().toISOString(),
+      });
     if (otpError) throw new CustomError(otpError.message, 500);
 
     // TODO: In production — send via SMS gateway (Twilio, MSG91, etc.)
