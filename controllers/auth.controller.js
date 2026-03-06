@@ -1,6 +1,5 @@
 const jwt = require("jsonwebtoken");
-const User = require("../models/user.model");
-const Otp = require("../models/otp.model");
+const supabase = require("../config/dbconfig");
 const CustomError = require("../helpers/CustomError");
 
 const OTP_EXPIRY_MS = 10 * 60 * 1000; // 10 minutes
@@ -22,17 +21,32 @@ const sendOtp = async (req, res, next) => {
     }
 
     // Find or create user
-    let user = await User.findOne({ phone });
+    let { data: user, error: findError } = await supabase
+      .from("users")
+      .select("*")
+      .eq("phone", phone)
+      .maybeSingle();
+    if (findError) throw new CustomError(findError.message, 500);
+
     if (!user) {
-      user = await User.create({ phone });
+      const { data: newUser, error: createError } = await supabase
+        .from("users")
+        .insert({ phone })
+        .select()
+        .single();
+      if (createError) throw new CustomError(createError.message, 500);
+      user = newUser;
     }
 
     // Remove any old OTPs for this user
-    await Otp.deleteMany({ user: user._id });
+    await supabase.from("otps").delete().eq("user_id", user.id);
 
     // Create & save new OTP
     const otpCode = generateOtp();
-    await Otp.create({ user: user._id, otp: otpCode });
+    const { error: otpError } = await supabase
+      .from("otps")
+      .insert({ user_id: user.id, otp: otpCode, timestamp: new Date().toISOString() });
+    if (otpError) throw new CustomError(otpError.message, 500);
 
     // TODO: In production — send via SMS gateway (Twilio, MSG91, etc.)
     console.log(`📱 OTP for +91${phone}: ${otpCode}`);
@@ -57,7 +71,12 @@ const verifyOtp = async (req, res, next) => {
       throw new CustomError("Phone number and OTP are required.", 400);
     }
 
-    const user = await User.findOne({ phone });
+    const { data: user, error: userError } = await supabase
+      .from("users")
+      .select("*")
+      .eq("phone", phone)
+      .maybeSingle();
+    if (userError) throw new CustomError(userError.message, 500);
     if (!user) {
       throw new CustomError(
         "User not found. Please request an OTP first.",
@@ -66,9 +85,14 @@ const verifyOtp = async (req, res, next) => {
     }
 
     // Fetch the most recent OTP for this user
-    const otpRecord = await Otp.findOne({ user: user._id }).sort({
-      timestamp: -1,
-    });
+    const { data: otpRecord, error: otpFetchError } = await supabase
+      .from("otps")
+      .select("*")
+      .eq("user_id", user.id)
+      .order("timestamp", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (otpFetchError) throw new CustomError(otpFetchError.message, 500);
     if (!otpRecord) {
       throw new CustomError("No OTP found. Please request a new one.", 400);
     }
@@ -76,7 +100,7 @@ const verifyOtp = async (req, res, next) => {
     // Check if OTP has expired
     const otpAge = Date.now() - new Date(otpRecord.timestamp).getTime();
     if (otpAge > OTP_EXPIRY_MS) {
-      await Otp.deleteMany({ user: user._id });
+      await supabase.from("otps").delete().eq("user_id", user.id);
       throw new CustomError("OTP has expired. Please request a new one.", 400);
     }
 
@@ -86,16 +110,18 @@ const verifyOtp = async (req, res, next) => {
     }
 
     // ✅ OTP is valid — clean up
-    await Otp.deleteMany({ user: user._id });
+    await supabase.from("otps").delete().eq("user_id", user.id);
 
     // Issue a JWT valid for 7 days
-    const token = jwt.sign({ _id: user._id }, process.env.JWT_PASSWORD, {
+    const token = jwt.sign({ _id: user.id }, process.env.JWT_PASSWORD, {
       expiresIn: `${SESSION_DAYS}d`,
     });
 
     // Persist session in DB (allows multi-device & forced logout)
-    user.sessions.push({ token });
-    await user.save();
+    const { error: sessionError } = await supabase
+      .from("sessions")
+      .insert({ user_id: user.id, token });
+    if (sessionError) throw new CustomError(sessionError.message, 500);
 
     // Set JWT in an HTTP-only cookie (safe from JS / XSS)
     res.cookie("jwtToken", token, {
@@ -110,7 +136,7 @@ const verifyOtp = async (req, res, next) => {
       message: "Login successful",
       token, // also returned for localStorage fallback
       user: {
-        _id: user._id,
+        _id: user.id,
         phone: user.phone,
         role: user.role,
       },
@@ -128,10 +154,7 @@ const logout = async (req, res, next) => {
 
     if (token) {
       // Remove only this session from DB
-      await User.updateOne(
-        { "sessions.token": token },
-        { $pull: { sessions: { token } } },
-      );
+      await supabase.from("sessions").delete().eq("token", token);
     }
 
     res.clearCookie("jwtToken");
@@ -150,7 +173,7 @@ const getMe = async (req, res) => {
   return res.status(200).json({
     success: true,
     user: {
-      _id: req.user._id,
+      _id: req.user.id,
       phone: req.user.phone,
       role: req.user.role,
     },

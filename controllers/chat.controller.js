@@ -1,5 +1,4 @@
-const ChatSession = require("../models/chatSession.model");
-const ChatMessage = require("../models/chatMessage.model");
+const supabase = require("../config/dbconfig");
 
 const CHAT_API_URL = process.env.CHAT_API_URL;
 const CHAT_API_KEY = process.env.CHAT_API_KEY;
@@ -81,10 +80,13 @@ When we're in pain, our minds often use 'all-or-nothing' thinking—making it fe
 // ─── GET /api/chat/sessions ────────────────────────────────────
 const getSessions = async (req, res, next) => {
   try {
-    const sessions = await ChatSession.find({ user: req.user._id })
-      .sort({ updatedAt: -1 })
-      .limit(50)
-      .lean();
+    const { data: sessions, error } = await supabase
+      .from("chat_sessions")
+      .select("*")
+      .eq("user_id", req.user.id)
+      .order("updated_at", { ascending: false })
+      .limit(50);
+    if (error) return next(new Error(error.message));
     res.json({ success: true, sessions });
   } catch (err) {
     next(err);
@@ -95,10 +97,15 @@ const getSessions = async (req, res, next) => {
 const createSession = async (req, res, next) => {
   try {
     const { startMood } = req.body;
-    const session = await ChatSession.create({
-      user: req.user._id,
-      ...(startMood ? { startMood } : {}),
-    });
+    const { data: session, error } = await supabase
+      .from("chat_sessions")
+      .insert({
+        user_id: req.user.id,
+        ...(startMood ? { start_mood: startMood } : {}),
+      })
+      .select()
+      .single();
+    if (error) return next(new Error(error.message));
     res.status(201).json({ success: true, session });
   } catch (err) {
     next(err);
@@ -108,17 +115,24 @@ const createSession = async (req, res, next) => {
 // ─── GET /api/chat/sessions/:id/messages ──────────────────────
 const getSessionMessages = async (req, res, next) => {
   try {
-    const session = await ChatSession.findOne({
-      _id: req.params.id,
-      user: req.user._id,
-    });
+    const { data: session, error: sessionError } = await supabase
+      .from("chat_sessions")
+      .select("*")
+      .eq("id", req.params.id)
+      .eq("user_id", req.user.id)
+      .maybeSingle();
+    if (sessionError) return next(new Error(sessionError.message));
     if (!session)
       return res
         .status(404)
         .json({ success: false, message: "Session not found" });
-    const messages = await ChatMessage.find({ session: session._id })
-      .sort({ createdAt: 1 })
-      .lean();
+
+    const { data: messages, error: msgError } = await supabase
+      .from("chat_messages")
+      .select("*")
+      .eq("session_id", session.id)
+      .order("created_at", { ascending: true });
+    if (msgError) return next(new Error(msgError.message));
     res.json({ success: true, messages });
   } catch (err) {
     next(err);
@@ -128,11 +142,13 @@ const getSessionMessages = async (req, res, next) => {
 // ─── Helper: auto-name session from its last ≤10 messages ─────
 const autoNameSession = async (sessionId) => {
   try {
-    const msgs = await ChatMessage.find({ session: sessionId })
-      .sort({ createdAt: -1 })
-      .limit(10)
-      .lean();
-    if (!msgs.length) return;
+    const { data: msgs } = await supabase
+      .from("chat_messages")
+      .select("*")
+      .eq("session_id", sessionId)
+      .order("created_at", { ascending: false })
+      .limit(10);
+    if (!msgs || !msgs.length) return;
     const excerpt = msgs
       .reverse()
       .map((m) => `${m.role}: ${m.content.slice(0, 120)}`)
@@ -157,7 +173,10 @@ const autoNameSession = async (sessionId) => {
       .replace(/^["']|["']$/g, "")
       .slice(0, 80);
     if (title) {
-      await ChatSession.findByIdAndUpdate(sessionId, { title });
+      await supabase
+        .from("chat_sessions")
+        .update({ title })
+        .eq("id", sessionId);
       console.log(`  [AUTO-NAME] session ${sessionId} → "${title}"`);
     }
   } catch (e) {
@@ -169,16 +188,19 @@ const autoNameSession = async (sessionId) => {
 const endSession = async (req, res, next) => {
   try {
     const { endMood, rating, feedback } = req.body;
-    const session = await ChatSession.findOneAndUpdate(
-      { _id: req.params.id, user: req.user._id },
-      {
+    const { data: session, error } = await supabase
+      .from("chat_sessions")
+      .update({
         ended: true,
-        ...(endMood !== undefined ? { endMood } : {}),
+        ...(endMood !== undefined ? { end_mood: endMood } : {}),
         ...(rating !== undefined ? { rating } : {}),
         ...(feedback !== undefined ? { feedback } : {}),
-      },
-      { new: true },
-    );
+      })
+      .eq("id", req.params.id)
+      .eq("user_id", req.user.id)
+      .select()
+      .maybeSingle();
+    if (error) return next(new Error(error.message));
     if (!session)
       return res
         .status(404)
@@ -279,15 +301,20 @@ Example Output
 // ─── DELETE /api/chat/sessions/:id ───────────────────────────
 const deleteSession = async (req, res, next) => {
   try {
-    const session = await ChatSession.findOneAndDelete({
-      _id: req.params.id,
-      user: req.user._id,
-    });
+    const { data: session, error: findError } = await supabase
+      .from("chat_sessions")
+      .select("id")
+      .eq("id", req.params.id)
+      .eq("user_id", req.user.id)
+      .maybeSingle();
+    if (findError) return next(new Error(findError.message));
     if (!session)
       return res
         .status(404)
         .json({ success: false, message: "Session not found" });
-    await ChatMessage.deleteMany({ session: session._id });
+
+    await supabase.from("chat_messages").delete().eq("session_id", session.id);
+    await supabase.from("chat_sessions").delete().eq("id", session.id);
     res.json({ success: true });
   } catch (err) {
     next(err);
@@ -310,10 +337,13 @@ const chat = async (req, res, next) => {
         .json({ success: false, message: "CHAT_API_URL is not configured." });
     }
 
-    const session = await ChatSession.findOne({
-      _id: sessionId,
-      user: req.user._id,
-    });
+    const { data: session, error: sessionError } = await supabase
+      .from("chat_sessions")
+      .select("*")
+      .eq("id", sessionId)
+      .eq("user_id", req.user.id)
+      .maybeSingle();
+    if (sessionError) return next(new Error(sessionError.message));
     if (!session)
       return res
         .status(404)
@@ -322,8 +352,8 @@ const chat = async (req, res, next) => {
     // Save the incoming user message
     const lastUserMsg = messages[messages.length - 1];
     if (lastUserMsg?.role === "user") {
-      await ChatMessage.create({
-        session: session._id,
+      await supabase.from("chat_messages").insert({
+        session_id: session.id,
         role: "user",
         content: lastUserMsg.content,
       });
@@ -342,11 +372,7 @@ const chat = async (req, res, next) => {
       stop: ["User:", "user:"],
     };
 
-    console.log(
-      "\n─── [CHAT] session:",
-      session._id.toString(),
-      "─────────────────",
-    );
+    console.log("\n─── [CHAT] session:", session.id, "─────────────────");
 
     res.setHeader("Content-Type", "text/plain; charset=utf-8");
     res.setHeader("Cache-Control", "no-cache");
@@ -418,15 +444,16 @@ const chat = async (req, res, next) => {
 
     // Persist reply + bump updatedAt asynchronously
     if (fullReply.trim()) {
-      await ChatMessage.create({
-        session: session._id,
+      await supabase.from("chat_messages").insert({
+        session_id: session.id,
         role: "assistant",
         content: fullReply.trim(),
       });
-      await ChatSession.findByIdAndUpdate(session._id, {
-        updatedAt: new Date(),
-      });
-      if (session.title === "New Conversation") autoNameSession(session._id);
+      await supabase
+        .from("chat_sessions")
+        .update({ updated_at: new Date().toISOString() })
+        .eq("id", session.id);
+      if (session.title === "New Conversation") autoNameSession(session.id);
     }
   } catch (error) {
     console.error("[CHAT] Error:", error.message);

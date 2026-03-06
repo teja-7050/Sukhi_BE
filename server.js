@@ -3,7 +3,6 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const cookieParser = require("cookie-parser");
-const connectToDB = require("./config/dbconfig");
 const authRoutes = require("./routes/auth.routes");
 const chatRoutes = require("./routes/chat.routes");
 
@@ -36,8 +35,6 @@ app.use((err, _req, res, _next) => {
 });
 
 // ─── Start Server ─────────────────────────────────────────────
-connectToDB().then(() => {
-  app.listen(PORT, () => {
-    console.log(`🚀 Server running on http://localhost:${PORT}`);
-  });
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on http://localhost:${PORT}`);
 });
