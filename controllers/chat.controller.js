@@ -4,6 +4,9 @@ const CHAT_API_URL = process.env.CHAT_API_URL;
 const CHAT_API_KEY = process.env.CHAT_API_KEY;
 const CHAT_MODEL = process.env.CHAT_MODEL;
 const SUGGESTION_MODEL = process.env.SUGGESTION_MODEL || CHAT_MODEL;
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const isUuid = (value) => typeof value === "string" && UUID_REGEX.test(value);
 
 const SYSTEM_PROMPT = `SYSTEM PROMPT: Sukhi, Mental Health Companion
 
@@ -115,6 +118,12 @@ const createSession = async (req, res, next) => {
 // ─── GET /api/chat/sessions/:id/messages ──────────────────────
 const getSessionMessages = async (req, res, next) => {
   try {
+    if (!isUuid(req.params.id)) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid session id." });
+    }
+
     const { data: session, error: sessionError } = await supabase
       .from("chat_sessions")
       .select("*")
@@ -187,6 +196,12 @@ const autoNameSession = async (sessionId) => {
 // ─── POST /api/chat/sessions/:id/end ────────────────────────
 const endSession = async (req, res, next) => {
   try {
+    if (!isUuid(req.params.id)) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid session id." });
+    }
+
     const { endMood, rating, feedback } = req.body;
     const { data: session, error } = await supabase
       .from("chat_sessions")
@@ -301,6 +316,12 @@ Example Output
 // ─── DELETE /api/chat/sessions/:id ───────────────────────────
 const deleteSession = async (req, res, next) => {
   try {
+    if (!isUuid(req.params.id)) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid session id." });
+    }
+
     const { data: session, error: findError } = await supabase
       .from("chat_sessions")
       .select("id")
@@ -326,6 +347,12 @@ const chat = async (req, res, next) => {
   try {
     const { messages, sessionId } = req.body;
 
+    if (!req.user?.id) {
+      return res
+        .status(401)
+        .json({ success: false, message: "Unauthorized session." });
+    }
+
     if (!messages || !Array.isArray(messages) || messages.length === 0) {
       return res
         .status(400)
@@ -335,6 +362,11 @@ const chat = async (req, res, next) => {
       return res
         .status(500)
         .json({ success: false, message: "CHAT_API_URL is not configured." });
+    }
+    if (!isUuid(sessionId)) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Valid sessionId is required." });
     }
 
     const { data: session, error: sessionError } = await supabase
@@ -374,27 +406,37 @@ const chat = async (req, res, next) => {
 
     console.log("\n─── [CHAT] session:", session.id, "─────────────────");
 
+    let upstream;
+    try {
+      upstream = await fetch(CHAT_API_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(CHAT_API_KEY ? { Authorization: `Bearer ${CHAT_API_KEY}` } : {}),
+        },
+        body: JSON.stringify(payload),
+      });
+    } catch (upstreamError) {
+      return res.status(502).json({
+        success: false,
+        message: "Chat upstream is unreachable.",
+      });
+    }
+
+    if (!upstream.ok) {
+      const errText = await upstream.text();
+      console.error("  Upstream error:", errText);
+      return res.status(502).json({
+        success: false,
+        message: "Chat upstream returned an error.",
+      });
+    }
+
     res.setHeader("Content-Type", "text/plain; charset=utf-8");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
     res.setHeader("X-Accel-Buffering", "no");
     res.flushHeaders();
-
-    const upstream = await fetch(CHAT_API_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(CHAT_API_KEY ? { Authorization: `Bearer ${CHAT_API_KEY}` } : {}),
-      },
-      body: JSON.stringify(payload),
-    });
-
-    if (!upstream.ok) {
-      const errText = await upstream.text();
-      console.error("  Upstream error:", errText);
-      res.end();
-      return;
-    }
 
     const reader = upstream.body.getReader();
     const decoder = new TextDecoder();
