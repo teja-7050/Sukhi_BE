@@ -62,8 +62,6 @@ const sendOtp = async (req, res, next) => {
     return res.status(200).json({
       success: true,
       message: `OTP sent to +91 ${phone}`,
-      // Expose OTP only in development for easy testing
-      ...(process.env.NODE_ENV !== "production" && { otp: otpCode }),
     });
   } catch (error) {
     next(error);
